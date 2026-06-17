@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ArrowRight,
   CheckSquare,
+  MessageSquare,
 } from 'lucide-react';
 import { postsApi, usersApi, servicesApi } from '../lib/api.js';
 import { useAuthStore } from '../store/useAuthStore.js';
@@ -56,8 +57,9 @@ export default function ServiceConfirm() {
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
-  const [confirmStatus, setConfirmStatus] = useState<'pending' | 'waiting' | 'completed'>('pending');
+  const [confirmStatus, setConfirmStatus] = useState<'pending' | 'waiting' | 'completed' | 'review_only'>('pending');
   const [errors, setErrors] = useState<{ rating?: string; confirmed?: string }>({});
+  const [serviceNotFound, setServiceNotFound] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -70,6 +72,7 @@ export default function ServiceConfirm() {
 
       setLoading(true);
       setError(null);
+      setServiceNotFound(false);
 
       try {
         const id = parseInt(postId, 10);
@@ -91,25 +94,39 @@ export default function ServiceConfirm() {
           setOtherUser(profileRes.data);
         }
 
-        const serviceRes = await servicesApi.getOrCreate({
-          postId: id,
-          duration: postData.duration,
-        });
-        if (serviceRes.success && serviceRes.data) {
-          const serviceId = serviceRes.data.id;
-          const detailRes = await servicesApi.getDetail(serviceId);
-          if (detailRes.success && detailRes.data) {
-            const serviceData = detailRes.data as any;
-            setService(serviceData);
-            if (serviceData.myConfirmed && serviceData.otherConfirmed) {
-              setConfirmStatus('completed');
-            } else if (serviceData.myConfirmed) {
-              setConfirmStatus('waiting');
+        try {
+          const serviceRes = await servicesApi.getOrCreate({
+            postId: id,
+            duration: postData.duration,
+          });
+          if (serviceRes.success && serviceRes.data) {
+            const serviceId = serviceRes.data.id;
+            const detailRes = await servicesApi.getDetail(serviceId);
+            if (detailRes.success && detailRes.data) {
+              const serviceData = detailRes.data as any;
+              setService(serviceData);
+              if (serviceData.myConfirmed && serviceData.otherConfirmed) {
+                if (serviceData.myReview?.rating) {
+                  setConfirmStatus('completed');
+                } else {
+                  setConfirmStatus('review_only');
+                }
+              } else if (serviceData.myConfirmed) {
+                setConfirmStatus('waiting');
+              } else {
+                setConfirmStatus('pending');
+              }
+              if (serviceData.myReview?.rating) {
+                setRating(serviceData.myReview.rating);
+                setReview(serviceData.myReview.comment || '');
+              }
             }
-            if (serviceData.myReview?.rating) {
-              setRating(serviceData.myReview.rating);
-              setReview(serviceData.myReview.comment || '');
-            }
+          }
+        } catch (serviceErr: any) {
+          if (serviceErr?.errorCode === 'SERVICE_NOT_FOUND' || serviceErr?.message?.includes('服务尚未发起')) {
+            setServiceNotFound(true);
+          } else {
+            throw serviceErr;
           }
         }
       } catch (err) {
@@ -125,8 +142,9 @@ export default function ServiceConfirm() {
   }, [postId, user, isAuthenticated, authLoading, navigate]);
 
   const isOffer = post?.type === 'offer';
-  const currentUserIsRequester = isOffer;
-  const currentUserIsProvider = !isOffer;
+  const isPostAuthor = post?.userId === user?.id;
+  const currentUserIsRequester = isOffer ? !isPostAuthor : isPostAuthor;
+  const currentUserIsProvider = isOffer ? isPostAuthor : !isPostAuthor;
 
   const category = post ? CATEGORY_MAP[post.category] : null;
 
@@ -166,10 +184,17 @@ export default function ServiceConfirm() {
         } else if (data.status === 'completed') {
           setConfirmStatus('completed');
           setSubmitSuccess(true);
+        } else if (data.status === 'review_added') {
+          setConfirmStatus('completed');
+          setSubmitSuccess(true);
         }
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '确认失败，请稍后重试');
+    } catch (err: any) {
+      if (err?.errorCode === 'ALREADY_CONFIRMED') {
+        setConfirmStatus('completed');
+      } else {
+        setError(err instanceof Error ? err.message : '确认失败，请稍后重试');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -198,6 +223,45 @@ export default function ServiceConfirm() {
                 <div className="h-24 bg-neutral-200 rounded" />
                 <div className="h-6 bg-neutral-200 rounded w-48" />
                 <div className="h-12 bg-neutral-200 rounded" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (serviceNotFound && post) {
+    return (
+      <div className="min-h-screen bg-neutral-50">
+        <div className="page-container">
+          <nav className="flex items-center gap-2 text-sm text-neutral-500 mb-6">
+            <Link to="/" className="hover:text-primary-600 transition-colors flex items-center gap-1">
+              <Home className="w-4 h-4" />
+              首页
+            </Link>
+            <ChevronRight className="w-4 h-4" />
+            <span className="text-neutral-800 font-medium">服务确认</span>
+          </nav>
+
+          <div className="max-w-2xl mx-auto">
+            <div className="card p-8 text-center">
+              <div className="w-20 h-20 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Clock className="w-10 h-10 text-yellow-500" />
+              </div>
+              <h2 className="font-serif text-2xl font-bold text-neutral-800 mb-2">
+                等待对方发起
+              </h2>
+              <p className="text-neutral-600 mb-6">
+                该服务尚未被对方发起确认，请先与对方沟通，让对方先发起服务确认流程。
+              </p>
+              <div className="flex gap-4 justify-center">
+                <Link to={`/post/${post.id}`} className="btn btn-ghost">
+                  返回帖子详情
+                </Link>
+                <Link to="/messages" className="btn btn-primary">
+                  去消息沟通
+                </Link>
               </div>
             </div>
           </div>
@@ -581,6 +645,103 @@ export default function ServiceConfirm() {
                 <>
                   <CheckCircle className="w-5 h-5 mr-2" />
                   确认服务完成
+                </>
+              )}
+            </button>
+          </form>
+          )}
+
+          {confirmStatus === 'review_only' && (
+          <form onSubmit={handleSubmit} className="card p-6 space-y-6">
+            <div className="flex items-start gap-3 mb-2">
+              <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                <MessageSquare className="w-5 h-5 text-blue-600" />
+              </div>
+              <div>
+                <h3 className="font-serif text-lg font-semibold text-neutral-800">
+                  补充评价
+                </h3>
+                <p className="text-sm text-neutral-500">
+                  服务已完成，您还未评价对方，请留下您的评价
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 mb-3">
+                服务评分 <span className="text-red-500">*</span>
+              </label>
+              <div className="flex items-center gap-2">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    onClick={() => setRating(star)}
+                    onMouseEnter={() => setHoverRating(star)}
+                    onMouseLeave={() => setHoverRating(0)}
+                    className={cn(
+                      'p-1 rounded-lg transition-all duration-200',
+                      'hover:scale-110 active:scale-95',
+                      errors.rating ? 'animate-pulse' : ''
+                    )}
+                  >
+                    <Star
+                      className={cn(
+                        'w-10 h-10 transition-colors duration-200',
+                        (hoverRating || rating) >= star
+                          ? 'text-yellow-400 fill-yellow-400'
+                          : 'text-neutral-300'
+                      )}
+                    />
+                  </button>
+                ))}
+                <span className="ml-2 text-lg font-semibold text-neutral-700">
+                  {rating} 分
+                </span>
+              </div>
+              <p className="text-sm text-neutral-500 mt-2">
+                {rating === 1 && '非常不满意'}
+                {rating === 2 && '不太满意'}
+                {rating === 3 && '一般'}
+                {rating === 4 && '比较满意'}
+                {rating === 5 && '非常满意'}
+              </p>
+              {errors.rating && (
+                <p className="mt-1 text-sm text-red-600">{errors.rating}</p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 mb-2">
+                评价内容 <span className="text-neutral-400">(选填)</span>
+              </label>
+              <textarea
+                value={review}
+                onChange={(e) => setReview(e.target.value)}
+                placeholder="分享您的服务体验，帮助其他用户了解对方的服务质量..."
+                rows={4}
+                className="input resize-none"
+                maxLength={500}
+              />
+              <p className="mt-1 text-xs text-neutral-400 text-right">
+                {review.length} / 500 字符
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="btn btn-primary w-full"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  提交中...
+                </>
+              ) : (
+                <>
+                  <Star className="w-5 h-5 mr-2" />
+                  提交评价
                 </>
               )}
             </button>

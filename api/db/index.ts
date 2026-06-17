@@ -183,6 +183,17 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
   `);
 
+  try {
+    await get<{ frozen_time_balance: number }>('SELECT frozen_time_balance FROM users LIMIT 1');
+  } catch (e) {
+    try {
+      await run('ALTER TABLE users ADD COLUMN frozen_time_balance INTEGER DEFAULT 0');
+      console.log('[DB] 已添加 frozen_time_balance 字段');
+    } catch (e2) {
+      console.log('[DB] frozen_time_balance 字段已存在');
+    }
+  }
+
   const adminHash = bcrypt.hashSync('admin123', 10);
   const userHash = bcrypt.hashSync('123456', 10);
 
@@ -256,6 +267,7 @@ export function rowToUser(row: any) {
     phone: row.phone,
     avatar: row.avatar,
     timeBalance: row.time_balance,
+    frozenTimeBalance: row.frozen_time_balance || 0,
     creditScore: row.credit_score,
     isAdmin: !!row.is_admin,
     isFrozen: !!row.is_frozen,

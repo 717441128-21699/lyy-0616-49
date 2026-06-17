@@ -104,102 +104,106 @@ router.post('/get-or-create', requireAuth, async (req, res) => {
     return res.status(404).json({ success: false, error: '帖子不存在' });
   }
 
-  if (postRow.user_id === user.id) {
-    return res.status(400).json({ success: false, error: '不能对自己发布的帖子发起服务' });
-  }
-
+  const isPostAuthor = postRow.user_id === user.id;
   const isOffer = postRow.type === 'offer';
-  const requesterId = isOffer ? user.id : postRow.user_id;
-  const providerId = isOffer ? postRow.user_id : user.id;
 
-  let existingService = await dbOps.get(`
-    SELECT s.*,
-      p.title as post_title,
-      r.username as requester_username, r.avatar as requester_avatar,
-      pr.username as provider_username, pr.avatar as provider_avatar
-    FROM services s
-    LEFT JOIN posts p ON s.post_id = p.id
-    LEFT JOIN users r ON s.requester_id = r.id
-    LEFT JOIN users pr ON s.provider_id = pr.id
-    WHERE s.post_id = ? AND s.requester_id = ? AND s.provider_id = ? AND s.status != 'cancelled'
-    ORDER BY s.id DESC
-    LIMIT 1
-  `, [postId, requesterId, providerId]);
+  let existingService;
 
-  if (existingService) {
-    const service = rowToService(existingService);
-    return res.json({
-      success: true,
-      data: {
-        ...service,
-        post: {
-          id: existingService.post_id,
-          title: existingService.post_title,
-        },
-        requester: {
-          id: existingService.requester_id,
-          username: existingService.requester_username,
-          avatar: existingService.requester_avatar,
-        },
-        provider: {
-          id: existingService.provider_id,
-          username: existingService.provider_username,
-          avatar: existingService.provider_avatar,
-        },
-      },
-    });
+  if (isPostAuthor) {
+    existingService = await dbOps.get(`
+      SELECT s.*,
+        p.title as post_title,
+        r.username as requester_username, r.avatar as requester_avatar,
+        pr.username as provider_username, pr.avatar as provider_avatar
+      FROM services s
+      LEFT JOIN posts p ON s.post_id = p.id
+      LEFT JOIN users r ON s.requester_id = r.id
+      LEFT JOIN users pr ON s.provider_id = pr.id
+      WHERE s.post_id = ?
+        AND (s.requester_id = ? OR s.provider_id = ?)
+        AND s.status != 'cancelled'
+      ORDER BY s.id DESC
+      LIMIT 1
+    `, [postId, user.id, user.id]);
+
+    if (!existingService) {
+      return res.status(404).json({
+        success: false,
+        error: '服务尚未发起，请对方先发起服务确认',
+        errorCode: 'SERVICE_NOT_FOUND',
+      });
+    }
+  } else {
+    const requesterId = isOffer ? user.id : postRow.user_id;
+    const providerId = isOffer ? postRow.user_id : user.id;
+
+    existingService = await dbOps.get(`
+      SELECT s.*,
+        p.title as post_title,
+        r.username as requester_username, r.avatar as requester_avatar,
+        pr.username as provider_username, pr.avatar as provider_avatar
+      FROM services s
+      LEFT JOIN posts p ON s.post_id = p.id
+      LEFT JOIN users r ON s.requester_id = r.id
+      LEFT JOIN users pr ON s.provider_id = pr.id
+      WHERE s.post_id = ? AND s.requester_id = ? AND s.provider_id = ? AND s.status != 'cancelled'
+      ORDER BY s.id DESC
+      LIMIT 1
+    `, [postId, requesterId, providerId]);
+
+    if (!existingService) {
+      const serviceDuration = duration || postRow.duration;
+
+      let serviceId: number;
+      try {
+        await dbOps.run('BEGIN TRANSACTION');
+
+        const result = await dbOps.run(`
+          INSERT INTO services (post_id, requester_id, provider_id, duration, status)
+          VALUES (?, ?, ?, ?, 'pending')
+        `, [postId, requesterId, providerId, serviceDuration]);
+
+        serviceId = result.lastID;
+
+        await dbOps.run('COMMIT');
+      } catch (error) {
+        await dbOps.run('ROLLBACK');
+        return res.status(500).json({ success: false, error: '创建服务失败' });
+      }
+
+      existingService = await dbOps.get(`
+        SELECT s.*,
+          p.title as post_title,
+          r.username as requester_username, r.avatar as requester_avatar,
+          pr.username as provider_username, pr.avatar as provider_avatar
+        FROM services s
+        LEFT JOIN posts p ON s.post_id = p.id
+        LEFT JOIN users r ON s.requester_id = r.id
+        LEFT JOIN users pr ON s.provider_id = pr.id
+        WHERE s.id = ?
+      `, [serviceId]);
+    }
   }
 
-  const serviceDuration = duration || postRow.duration;
-
-  let serviceId: number;
-  try {
-    await dbOps.run('BEGIN TRANSACTION');
-
-    const result = await dbOps.run(`
-      INSERT INTO services (post_id, requester_id, provider_id, duration, status)
-      VALUES (?, ?, ?, ?, 'pending')
-    `, [postId, requesterId, providerId, serviceDuration]);
-
-    serviceId = result.lastID;
-
-    await dbOps.run('COMMIT');
-  } catch (error) {
-    await dbOps.run('ROLLBACK');
-    return res.status(500).json({ success: false, error: '创建服务失败' });
-  }
-
-  const serviceRow = await dbOps.get(`
-    SELECT s.*,
-      p.title as post_title,
-      r.username as requester_username, r.avatar as requester_avatar,
-      pr.username as provider_username, pr.avatar as provider_avatar
-    FROM services s
-    LEFT JOIN posts p ON s.post_id = p.id
-    LEFT JOIN users r ON s.requester_id = r.id
-    LEFT JOIN users pr ON s.provider_id = pr.id
-    WHERE s.id = ?
-  `, [serviceId]);
-
-  const service = rowToService(serviceRow);
+  const service = rowToService(existingService);
 
   res.json({
     success: true,
     data: {
       ...service,
       post: {
-        id: serviceRow.post_id,
-        title: serviceRow.post_title,
+        id: existingService.post_id,
+        title: existingService.post_title,
       },
       requester: {
-        id: serviceRow.requester_id,
-        username: serviceRow.requester_username,
-        avatar: serviceRow.requester_avatar,
+        id: existingService.requester_id,
+        username: existingService.requester_username,
+        avatar: existingService.requester_avatar,
       },
       provider: {
-        id: serviceRow.provider_id,
-        username: serviceRow.provider_username,
-        avatar: serviceRow.provider_avatar,
+        id: existingService.provider_id,
+        username: existingService.provider_username,
+        avatar: existingService.provider_avatar,
       },
     },
   });
@@ -311,11 +315,24 @@ router.post('/:id/confirm', requireAuth, async (req, res) => {
   `, [id, user.id]);
 
   if (myReview) {
-    return res.status(400).json({ success: false, error: '您已确认过此服务' });
+    return res.status(400).json({ success: false, error: '您已确认过此服务', errorCode: 'ALREADY_CONFIRMED' });
   }
 
   if (serviceRow.status === 'completed') {
-    return res.status(400).json({ success: false, error: '服务已完成' });
+    await dbOps.run(`
+      INSERT INTO reviews (service_id, reviewer_id, reviewee_id, rating, comment)
+      VALUES (?, ?, ?, ?, ?)
+    `, [id, user.id, otherUserId, rating, review || null]);
+
+    return res.json({
+      success: true,
+      data: {
+        status: 'review_added',
+        message: '评价已提交',
+        myConfirmed: true,
+        otherConfirmed: true,
+      },
+    });
   }
 
   const otherReview = await dbOps.get(`
@@ -324,22 +341,28 @@ router.post('/:id/confirm', requireAuth, async (req, res) => {
 
   const isFirstConfirm = !otherReview;
 
-  if (isRequester) {
-    if (user.timeBalance < duration) {
-      return res.status(400).json({
-        success: false,
-        error: `时间积分不足，您需要支付 ${duration} 小时，但当前余额只有 ${user.timeBalance} 小时`,
-        errorCode: 'INSUFFICIENT_BALANCE',
-      });
-    }
-  } else {
-    const requesterRow = await dbOps.get('SELECT time_balance FROM users WHERE id = ?', [serviceRow.requester_id]);
+  const requesterId = serviceRow.requester_id;
+
+  if (isFirstConfirm) {
+    const requesterRow = await dbOps.get<{ time_balance: number }>(
+      'SELECT time_balance FROM users WHERE id = ?',
+      [requesterId]
+    );
     if (!requesterRow || requesterRow.time_balance < duration) {
-      return res.status(400).json({
-        success: false,
-        error: `求助方时间积分不足（${requesterRow?.time_balance || 0}小时），无法完成结算，请先联系对方确认余额`,
-        errorCode: 'OTHER_INSUFFICIENT_BALANCE',
-      });
+      const balance = requesterRow?.time_balance || 0;
+      if (isRequester) {
+        return res.status(400).json({
+          success: false,
+          error: `时间积分不足，您需要支付 ${duration} 小时，但当前余额只有 ${balance} 小时`,
+          errorCode: 'INSUFFICIENT_BALANCE',
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: `求助方时间积分不足（${balance}小时），无法完成结算，请先联系对方确认余额`,
+          errorCode: 'OTHER_INSUFFICIENT_BALANCE',
+        });
+      }
     }
   }
 
@@ -371,25 +394,45 @@ router.post('/:id/confirm', requireAuth, async (req, res) => {
         VALUES (?, ?, ?, ?, ?)
       `, [id, user.id, otherUserId, rating, review || null]);
 
-      await dbOps.run(`
-        UPDATE services SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?
-      `, [id]);
+      const deductResult = await dbOps.run(`
+        UPDATE users SET time_balance = time_balance - ?
+        WHERE id = ? AND time_balance >= ?
+      `, [duration, requesterId, duration]);
 
-      const fromUserId = serviceRow.requester_id;
-      const toUserId = serviceRow.provider_id;
-
-      await dbOps.run(`
-        UPDATE users SET time_balance = time_balance - ? WHERE id = ?
-      `, [duration, fromUserId]);
+      if (deductResult.changes === 0) {
+        await dbOps.run('ROLLBACK');
+        const requesterRow = await dbOps.get<{ time_balance: number }>(
+          'SELECT time_balance FROM users WHERE id = ?',
+          [requesterId]
+        );
+        const balance = requesterRow?.time_balance || 0;
+        if (isRequester) {
+          return res.status(400).json({
+            success: false,
+            error: `时间积分不足，您需要支付 ${duration} 小时，但当前余额只有 ${balance} 小时`,
+            errorCode: 'INSUFFICIENT_BALANCE',
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: `求助方时间积分不足（${balance}小时），无法完成结算，请先联系对方确认余额`,
+            errorCode: 'OTHER_INSUFFICIENT_BALANCE',
+          });
+        }
+      }
 
       await dbOps.run(`
         UPDATE users SET time_balance = time_balance + ? WHERE id = ?
-      `, [duration, toUserId]);
+      `, [duration, serviceRow.provider_id]);
 
       const txResult = await dbOps.run(`
         INSERT INTO transactions (service_id, from_user_id, to_user_id, amount, type, description)
         VALUES (?, ?, ?, ?, 'service', ?)
-      `, [id, fromUserId, toUserId, duration, `服务时长 ${duration} 小时`]);
+      `, [id, requesterId, serviceRow.provider_id, duration, `服务时长 ${duration} 小时`]);
+
+      await dbOps.run(`
+        UPDATE services SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?
+      `, [id]);
 
       await dbOps.run(`
         UPDATE posts SET status = 'completed' WHERE id = ?

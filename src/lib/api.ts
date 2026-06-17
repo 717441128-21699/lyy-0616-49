@@ -35,7 +35,9 @@ async function request<T = unknown>(
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data.error || data.message || '请求失败');
+    const err = new Error(data.error || data.message || '请求失败') as any;
+    err.errorCode = data.errorCode;
+    throw err;
   }
 
   return data;
