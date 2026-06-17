@@ -111,6 +111,16 @@ export const usersApi = {
     if (params?.status) query.append('status', params.status);
     return request<Post[]>(`/users/${id}/posts?${query.toString()}`);
   },
+
+  getReviews: (id: number, type: 'received' | 'given' = 'received') =>
+    request<Array<{
+      id: number;
+      rating: number;
+      comment?: string;
+      createdAt: string;
+      post: { id: number; title: string };
+      otherUser: { id: number; username: string; avatar?: string };
+    }>>(`/users/${id}/reviews?type=${type}`),
 };
 
 export const servicesApi = {

@@ -237,6 +237,9 @@ router.get('/:id', requireAuth, async (req, res) => {
     WHERE rv.service_id = ?
   `, [id]);
 
+  const myReview = reviews.find((r: any) => r.reviewer_id === user.id);
+  const otherReview = reviews.find((r: any) => r.reviewer_id !== user.id);
+
   res.json({
     success: true,
     data: {
@@ -265,6 +268,16 @@ router.get('/:id', requireAuth, async (req, res) => {
           avatar: r.avatar,
         },
       })),
+      myConfirmed: !!myReview,
+      otherConfirmed: !!otherReview,
+      myReview: myReview ? {
+        ...rowToReview(myReview),
+        reviewer: {
+          id: myReview.reviewer_id,
+          username: myReview.username,
+          avatar: myReview.avatar,
+        },
+      } : null,
     },
   });
 });
@@ -283,12 +296,6 @@ router.post('/:id/confirm', requireAuth, async (req, res) => {
     return res.status(404).json({ success: false, error: '服务不存在' });
   }
 
-  const service = rowToService(serviceRow);
-
-  if (service!.status === 'completed') {
-    return res.status(400).json({ success: false, error: '服务已完成' });
-  }
-
   const isRequester = serviceRow.requester_id === user.id;
   const isProvider = serviceRow.provider_id === user.id;
 
@@ -297,100 +304,138 @@ router.post('/:id/confirm', requireAuth, async (req, res) => {
   }
 
   const otherUserId = isRequester ? serviceRow.provider_id : serviceRow.requester_id;
-  const otherUserRow = await dbOps.get('SELECT * FROM users WHERE id = ?', [otherUserId]);
-  const otherUser = rowToUser(otherUserRow);
+  const duration = serviceRow.duration;
 
-  if (isRequester && otherUser!.timeBalance < serviceRow.duration) {
-    return res.status(400).json({ success: false, error: '对方时间积分不足' });
-  }
-
-  if (isProvider && user.timeBalance < serviceRow.duration) {
-    return res.status(400).json({ success: false, error: '您的时间积分不足' });
-  }
-
-  const existingReview = await dbOps.get(`
-    SELECT id FROM reviews
-    WHERE service_id = ? AND reviewer_id = ?
+  const myReview = await dbOps.get(`
+    SELECT id FROM reviews WHERE service_id = ? AND reviewer_id = ?
   `, [id, user.id]);
 
-  if (existingReview) {
+  if (myReview) {
     return res.status(400).json({ success: false, error: '您已确认过此服务' });
   }
 
-  try {
-    await dbOps.run('BEGIN TRANSACTION');
+  if (serviceRow.status === 'completed') {
+    return res.status(400).json({ success: false, error: '服务已完成' });
+  }
 
-    await dbOps.run(`
-      UPDATE services SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?
-    `, [id]);
+  const otherReview = await dbOps.get(`
+    SELECT id FROM reviews WHERE service_id = ? AND reviewer_id = ?
+  `, [id, otherUserId]);
 
-    const fromUserId = isRequester ? user.id : otherUserId;
-    const toUserId = isRequester ? otherUserId : user.id;
+  const isFirstConfirm = !otherReview;
 
-    await dbOps.run(`
-      UPDATE users SET time_balance = time_balance - ? WHERE id = ?
-    `, [serviceRow.duration, fromUserId]);
+  if (isRequester) {
+    if (user.timeBalance < duration) {
+      return res.status(400).json({
+        success: false,
+        error: `时间积分不足，您需要支付 ${duration} 小时，但当前余额只有 ${user.timeBalance} 小时`,
+        errorCode: 'INSUFFICIENT_BALANCE',
+      });
+    }
+  } else {
+    const requesterRow = await dbOps.get('SELECT time_balance FROM users WHERE id = ?', [serviceRow.requester_id]);
+    if (!requesterRow || requesterRow.time_balance < duration) {
+      return res.status(400).json({
+        success: false,
+        error: `求助方时间积分不足（${requesterRow?.time_balance || 0}小时），无法完成结算，请先联系对方确认余额`,
+        errorCode: 'OTHER_INSUFFICIENT_BALANCE',
+      });
+    }
+  }
 
-    await dbOps.run(`
-      UPDATE users SET time_balance = time_balance + ? WHERE id = ?
-    `, [serviceRow.duration, toUserId]);
-
-    const txResult = await dbOps.run(`
-      INSERT INTO transactions (service_id, from_user_id, to_user_id, amount, type, description)
-      VALUES (?, ?, ?, ?, 'service', ?)
-    `, [id, fromUserId, toUserId, serviceRow.duration, serviceRow.duration]);
-
+  if (isFirstConfirm) {
     await dbOps.run(`
       INSERT INTO reviews (service_id, reviewer_id, reviewee_id, rating, comment)
       VALUES (?, ?, ?, ?, ?)
     `, [id, user.id, otherUserId, rating, review || null]);
 
-    const otherReview = await dbOps.get(`
-      SELECT id FROM reviews
-      WHERE service_id = ? AND reviewer_id = ?
-    `, [id, otherUserId]);
+    await dbOps.run(`
+      UPDATE services SET status = 'confirmed' WHERE id = ?
+    `, [id]);
 
-    if (otherReview) {
+    return res.json({
+      success: true,
+      data: {
+        status: 'waiting',
+        message: '您已确认，等待对方确认后完成服务',
+        myConfirmed: true,
+        otherConfirmed: false,
+      },
+    });
+  } else {
+    try {
+      await dbOps.run('BEGIN TRANSACTION');
+
+      await dbOps.run(`
+        INSERT INTO reviews (service_id, reviewer_id, reviewee_id, rating, comment)
+        VALUES (?, ?, ?, ?, ?)
+      `, [id, user.id, otherUserId, rating, review || null]);
+
+      await dbOps.run(`
+        UPDATE services SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?
+      `, [id]);
+
+      const fromUserId = serviceRow.requester_id;
+      const toUserId = serviceRow.provider_id;
+
+      await dbOps.run(`
+        UPDATE users SET time_balance = time_balance - ? WHERE id = ?
+      `, [duration, fromUserId]);
+
+      await dbOps.run(`
+        UPDATE users SET time_balance = time_balance + ? WHERE id = ?
+      `, [duration, toUserId]);
+
+      const txResult = await dbOps.run(`
+        INSERT INTO transactions (service_id, from_user_id, to_user_id, amount, type, description)
+        VALUES (?, ?, ?, ?, 'service', ?)
+      `, [id, fromUserId, toUserId, duration, `服务时长 ${duration} 小时`]);
+
       await dbOps.run(`
         UPDATE posts SET status = 'completed' WHERE id = ?
       `, [serviceRow.post_id]);
+
+      await dbOps.run('COMMIT');
+
+      const transactionId = txResult.lastID;
+
+      const transactionRow = await dbOps.get(`
+        SELECT t.*,
+          fu.username as from_username, fu.avatar as from_avatar,
+          tu.username as to_username, tu.avatar as to_avatar
+        FROM transactions t
+        LEFT JOIN users fu ON t.from_user_id = fu.id
+        LEFT JOIN users tu ON t.to_user_id = tu.id
+        WHERE t.id = ?
+      `, [transactionId]);
+
+      const transaction = rowToTransaction(transactionRow);
+
+      return res.json({
+        success: true,
+        data: {
+          ...transaction,
+          fromUser: {
+            id: transactionRow.from_user_id,
+            username: transactionRow.from_username,
+            avatar: transactionRow.from_avatar,
+          },
+          toUser: {
+            id: transactionRow.to_user_id,
+            username: transactionRow.to_username,
+            avatar: transactionRow.to_avatar,
+          },
+          status: 'completed',
+          message: '服务已完成，时间积分已划转',
+          myConfirmed: true,
+          otherConfirmed: true,
+        },
+      });
+    } catch (error) {
+      await dbOps.run('ROLLBACK');
+      console.error('确认服务失败:', error);
+      return res.status(500).json({ success: false, error: '确认服务失败，请稍后重试' });
     }
-
-    await dbOps.run('COMMIT');
-
-    const transactionId = txResult.lastID;
-
-    const transactionRow = await dbOps.get(`
-      SELECT t.*,
-        fu.username as from_username, fu.avatar as from_avatar,
-        tu.username as to_username, tu.avatar as to_avatar
-      FROM transactions t
-      LEFT JOIN users fu ON t.from_user_id = fu.id
-      LEFT JOIN users tu ON t.to_user_id = tu.id
-      WHERE t.id = ?
-    `, [transactionId]);
-
-    const transaction = rowToTransaction(transactionRow);
-
-    res.json({
-      success: true,
-      data: {
-        ...transaction,
-        fromUser: {
-          id: transactionRow.from_user_id,
-          username: transactionRow.from_username,
-          avatar: transactionRow.from_avatar,
-        },
-        toUser: {
-          id: transactionRow.to_user_id,
-          username: transactionRow.to_username,
-          avatar: transactionRow.to_avatar,
-        },
-      },
-    });
-  } catch (error) {
-    await dbOps.run('ROLLBACK');
-    res.status(500).json({ success: false, error: '确认服务失败' });
   }
 });
 

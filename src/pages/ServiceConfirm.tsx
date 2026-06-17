@@ -38,6 +38,15 @@ export default function ServiceConfirm() {
     post: Partial<Post>;
     requester: Partial<User>;
     provider: Partial<User>;
+    myConfirmed?: boolean;
+    otherConfirmed?: boolean;
+    myReview?: {
+      id: number;
+      rating: number;
+      comment?: string;
+      createdAt: string;
+      reviewer: Partial<User>;
+    } | null;
   }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +56,7 @@ export default function ServiceConfirm() {
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [confirmStatus, setConfirmStatus] = useState<'pending' | 'waiting' | 'completed'>('pending');
   const [errors, setErrors] = useState<{ rating?: string; confirmed?: string }>({});
 
   useEffect(() => {
@@ -86,7 +96,21 @@ export default function ServiceConfirm() {
           duration: postData.duration,
         });
         if (serviceRes.success && serviceRes.data) {
-          setService(serviceRes.data);
+          const serviceId = serviceRes.data.id;
+          const detailRes = await servicesApi.getDetail(serviceId);
+          if (detailRes.success && detailRes.data) {
+            const serviceData = detailRes.data as any;
+            setService(serviceData);
+            if (serviceData.myConfirmed && serviceData.otherConfirmed) {
+              setConfirmStatus('completed');
+            } else if (serviceData.myConfirmed) {
+              setConfirmStatus('waiting');
+            }
+            if (serviceData.myReview?.rating) {
+              setRating(serviceData.myReview.rating);
+              setReview(serviceData.myReview.comment || '');
+            }
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : '加载失败，请稍后重试');
@@ -127,6 +151,7 @@ export default function ServiceConfirm() {
     if (!validateForm() || !service) return;
 
     setSubmitting(true);
+    setError(null);
     try {
       const res = await servicesApi.confirm(service.id, {
         rating,
@@ -134,7 +159,14 @@ export default function ServiceConfirm() {
       });
 
       if (res.success) {
-        setSubmitSuccess(true);
+        const data = res.data as any;
+        if (data.status === 'waiting') {
+          setConfirmStatus('waiting');
+          setService(prev => prev ? { ...prev, myConfirmed: true } : prev);
+        } else if (data.status === 'completed') {
+          setConfirmStatus('completed');
+          setSubmitSuccess(true);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '确认失败，请稍后重试');
@@ -376,6 +408,53 @@ export default function ServiceConfirm() {
             </div>
           </div>
 
+          {confirmStatus === 'waiting' && (
+            <div className="card p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
+                  <Clock className="w-6 h-6 text-yellow-600 animate-pulse" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-serif text-lg font-semibold text-neutral-800 mb-1">
+                    等待对方确认
+                  </h3>
+                  <p className="text-neutral-600 text-sm mb-4">
+                    您已确认服务完成，对方确认后服务将正式完成，时间积分将自动划转。
+                  </p>
+                  <div className="bg-neutral-50 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="flex">
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <Star
+                            key={star}
+                            className={cn(
+                              'w-5 h-5',
+                              rating >= star
+                                ? 'text-yellow-400 fill-yellow-400'
+                                : 'text-neutral-300'
+                            )}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-sm font-medium text-neutral-700">
+                        {rating} 分
+                      </span>
+                    </div>
+                    {review && (
+                      <p className="text-sm text-neutral-600 whitespace-pre-wrap">
+                        {review}
+                      </p>
+                    )}
+                    <p className="text-xs text-neutral-400">
+                      您的评价
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {confirmStatus === 'pending' && (
           <form onSubmit={handleSubmit} className="card p-6 space-y-6">
             <h3 className="font-serif text-lg font-semibold text-neutral-800">
               服务评价
@@ -506,6 +585,7 @@ export default function ServiceConfirm() {
               )}
             </button>
           </form>
+          )}
         </div>
       </div>
     </div>

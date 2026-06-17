@@ -123,7 +123,7 @@ router.post('/users/:id/freeze', requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { reason } = req.body;
 
-  const userRow = await dbOps.get<{ is_admin: number }>('SELECT * FROM users WHERE id = ?', [id]);
+  const userRow = await dbOps.get<{ is_admin: number; time_balance: number }>('SELECT * FROM users WHERE id = ?', [id]);
   if (!userRow) {
     return res.status(404).json({ success: false, error: '用户不存在' });
   }
@@ -133,7 +133,7 @@ router.post('/users/:id/freeze', requireAdmin, async (req, res) => {
   }
 
   await dbOps.run(`
-    UPDATE users SET is_frozen = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    UPDATE users SET is_frozen = 1, frozen_time_balance = time_balance, time_balance = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?
   `, [id]);
 
   res.json({ success: true, message: '账户已冻结' });
@@ -142,13 +142,13 @@ router.post('/users/:id/freeze', requireAdmin, async (req, res) => {
 router.post('/users/:id/unfreeze', requireAdmin, async (req, res) => {
   const { id } = req.params;
 
-  const userRow = await dbOps.get('SELECT * FROM users WHERE id = ?', [id]);
+  const userRow = await dbOps.get<{ frozen_time_balance: number }>('SELECT * FROM users WHERE id = ?', [id]);
   if (!userRow) {
     return res.status(404).json({ success: false, error: '用户不存在' });
   }
 
   await dbOps.run(`
-    UPDATE users SET is_frozen = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    UPDATE users SET is_frozen = 0, time_balance = frozen_time_balance, frozen_time_balance = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?
   `, [id]);
 
   res.json({ success: true, message: '账户已解冻' });

@@ -57,7 +57,7 @@ router.get('/', requireAdmin, async (req, res) => {
   const reports = await Promise.all(rows.map(async (row: any) => {
     const report = rowToReport(row);
 
-    let targetUser, targetPost;
+    let targetUser, targetPost, targetService;
 
     if (row.target_type === 'user') {
       const userRow = await dbOps.get('SELECT username, avatar FROM users WHERE id = ?', [row.target_id]);
@@ -65,6 +65,36 @@ router.get('/', requireAdmin, async (req, res) => {
     } else if (row.target_type === 'post') {
       const postRow = await dbOps.get('SELECT title, user_id FROM posts WHERE id = ?', [row.target_id]);
       targetPost = postRow ? { id: row.target_id, title: postRow.title, userId: postRow.user_id } : null;
+    } else if (row.target_type === 'service') {
+      const serviceRow = await dbOps.get(`
+        SELECT s.*, p.title as post_title,
+          ru.username as requester_username, ru.avatar as requester_avatar,
+          pu.username as provider_username, pu.avatar as provider_avatar
+        FROM services s
+        LEFT JOIN posts p ON s.post_id = p.id
+        LEFT JOIN users ru ON s.requester_id = ru.id
+        LEFT JOIN users pu ON s.provider_id = pu.id
+        WHERE s.id = ?
+      `, [row.target_id]);
+      if (serviceRow) {
+        targetService = {
+          id: serviceRow.id,
+          postId: serviceRow.post_id,
+          postTitle: serviceRow.post_title,
+          duration: serviceRow.duration,
+          status: serviceRow.status,
+          requester: {
+            id: serviceRow.requester_id,
+            username: serviceRow.requester_username,
+            avatar: serviceRow.requester_avatar,
+          },
+          provider: {
+            id: serviceRow.provider_id,
+            username: serviceRow.provider_username,
+            avatar: serviceRow.provider_avatar,
+          },
+        };
+      }
     }
 
     return {
@@ -76,6 +106,7 @@ router.get('/', requireAdmin, async (req, res) => {
       },
       targetUser,
       targetPost,
+      targetService,
     };
   }));
 
@@ -102,16 +133,29 @@ router.post('/:id/process', requireAdmin, async (req, res) => {
     await dbOps.run('BEGIN TRANSACTION');
 
     if (action === 'freeze') {
-      const targetUserId = reportRow.target_type === 'user'
-        ? reportRow.target_id
-        : reportRow.target_type === 'post'
-          ? ((await dbOps.get<{ user_id: number }>('SELECT user_id FROM posts WHERE id = ?', [reportRow.target_id]))?.user_id)
-          : ((await dbOps.get<{ requester_id: number }>('SELECT requester_id FROM services WHERE id = ?', [reportRow.target_id]))?.requester_id);
+      let targetUserIds: number[] = [];
 
-      if (targetUserId) {
+      if (reportRow.target_type === 'user') {
+        targetUserIds = [reportRow.target_id];
+      } else if (reportRow.target_type === 'post') {
+        const postRow = await dbOps.get<{ user_id: number }>('SELECT user_id FROM posts WHERE id = ?', [reportRow.target_id]);
+        if (postRow?.user_id) {
+          targetUserIds = [postRow.user_id];
+        }
+      } else if (reportRow.target_type === 'service') {
+        const serviceRow = await dbOps.get<{ requester_id: number; provider_id: number }>(
+          'SELECT requester_id, provider_id FROM services WHERE id = ?',
+          [reportRow.target_id]
+        );
+        if (serviceRow) {
+          targetUserIds = [serviceRow.requester_id, serviceRow.provider_id];
+        }
+      }
+
+      for (const userId of targetUserIds) {
         await dbOps.run(`
-          UPDATE users SET is_frozen = 1, time_balance = 0 WHERE id = ?
-        `, [targetUserId]);
+          UPDATE users SET is_frozen = 1, frozen_time_balance = time_balance, time_balance = 0 WHERE id = ?
+        `, [userId]);
       }
     }
 

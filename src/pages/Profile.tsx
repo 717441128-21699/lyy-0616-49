@@ -20,6 +20,9 @@ import {
   Settings as SettingsIcon,
   LayoutDashboard,
   ArrowLeftRight,
+  MessageSquare,
+  Inbox,
+  Send,
 } from 'lucide-react';
 import { transactionsApi, usersApi } from '../lib/api.js';
 import { useAuthStore } from '../store/useAuthStore.js';
@@ -28,7 +31,7 @@ import Empty from '../components/Empty.js';
 import { cn } from '../lib/utils.js';
 import type { Post, Transaction, User } from '../../shared/types.js';
 
-type TabType = 'overview' | 'posts' | 'transactions' | 'settings';
+type TabType = 'overview' | 'posts' | 'transactions' | 'reviews' | 'settings';
 
 type TransactionItem = Transaction & {
   fromUser: { id: number; username: string; avatar?: string };
@@ -56,6 +59,7 @@ const TABS = [
   { id: 'overview' as TabType, label: '概览', icon: LayoutDashboard },
   { id: 'posts' as TabType, label: '我的发布', icon: FileText },
   { id: 'transactions' as TabType, label: '交易记录', icon: ArrowLeftRight },
+  { id: 'reviews' as TabType, label: '服务评价', icon: MessageSquare },
   { id: 'settings' as TabType, label: '账户设置', icon: SettingsIcon },
 ];
 
@@ -68,6 +72,7 @@ export default function Profile() {
 
   const getInitialTab = (): TabType => {
     if (location.pathname.includes('transactions')) return 'transactions';
+    if (location.pathname.includes('reviews')) return 'reviews';
     if (location.pathname.includes('settings')) return 'settings';
     return 'overview';
   };
@@ -109,6 +114,17 @@ export default function Profile() {
   const [transactionsTotal, setTransactionsTotal] = useState(0);
   const [transactionsPage, setTransactionsPage] = useState(1);
   const [transactionsLoading, setTransactionsLoading] = useState(true);
+
+  const [reviews, setReviews] = useState<Array<{
+    id: number;
+    rating: number;
+    comment?: string;
+    createdAt: string;
+    post: { id: number; title: string };
+    otherUser: { id: number; username: string; avatar?: string };
+  }>>([]);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [reviewType, setReviewType] = useState<'received' | 'given'>('received');
 
   const [settingsForm, setSettingsForm] = useState({
     username: '',
@@ -154,6 +170,12 @@ export default function Profile() {
       loadTransactions();
     }
   }, [user, activeTab, transactionsPage]);
+
+  useEffect(() => {
+    if (user && activeTab === 'reviews') {
+      loadReviews();
+    }
+  }, [user, activeTab, reviewType]);
 
   const loadProfile = async () => {
     if (!user) return;
@@ -232,6 +254,21 @@ export default function Profile() {
   } finally {
     setTransactionsLoading(false);
   }
+  };
+
+  const loadReviews = async () => {
+    if (!user) return;
+    setReviewsLoading(true);
+    try {
+      const res = await usersApi.getReviews(user.id, reviewType);
+      if (res.success && res.data) {
+        setReviews(res.data as any);
+      }
+    } catch (error) {
+      console.error('加载评价失败:', error);
+    } finally {
+      setReviewsLoading(false);
+    }
   };
 
   const handleSaveProfile = (e: React.FormEvent) => {
@@ -745,6 +782,130 @@ export default function Profile() {
     </div>
   );
 
+  const renderReviewsTab = () => (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h3 className="font-serif text-xl font-semibold text-neutral-800">
+          服务评价
+        </h3>
+        <div className="flex gap-1 bg-neutral-100 rounded-lg p-1">
+          <button
+            onClick={() => setReviewType('received')}
+            className={cn(
+              'px-4 py-2 rounded-md text-sm font-medium transition-all',
+              reviewType === 'received'
+                ? 'bg-white text-primary-600 shadow-sm'
+                : 'text-neutral-600 hover:text-neutral-800'
+            )}
+          >
+            <span className="flex items-center gap-2">
+              <Inbox className="w-4 h-4" />
+              收到的评价
+            </span>
+          </button>
+          <button
+            onClick={() => setReviewType('given')}
+            className={cn(
+              'px-4 py-2 rounded-md text-sm font-medium transition-all',
+              reviewType === 'given'
+                ? 'bg-white text-primary-600 shadow-sm'
+                : 'text-neutral-600 hover:text-neutral-800'
+            )}
+          >
+            <span className="flex items-center gap-2">
+              <Send className="w-4 h-4" />
+              我给出的评价
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {reviewsLoading ? (
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="card p-6 animate-pulse">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-full bg-neutral-200" />
+                <div className="flex-1 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="h-4 bg-neutral-200 rounded w-32" />
+                    <div className="h-4 bg-neutral-200 rounded w-20" />
+                  </div>
+                  <div className="h-4 bg-neutral-200 rounded w-3/4" />
+                  <div className="h-4 bg-neutral-200 rounded w-1/2" />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : reviews.length === 0 ? (
+        <Empty
+          icon={MessageSquare}
+          title={reviewType === 'received' ? '暂无收到的评价' : '暂无给出的评价'}
+          description={
+            reviewType === 'received'
+              ? '完成服务后，对方的评价会显示在这里'
+              : '您完成服务后给出的评价会显示在这里'
+          }
+        />
+      ) : (
+        <div className="space-y-4 animate-stagger">
+          {reviews.map((review) => (
+            <div key={review.id} className="card p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                  {review.otherUser.avatar ? (
+                    <img
+                      src={review.otherUser.avatar}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <UserIcon className="w-6 h-6 text-white" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-4 mb-2">
+                    <div>
+                      <p className="font-medium text-neutral-800">
+                        {review.otherUser.username}
+                      </p>
+                      <p className="text-xs text-neutral-500">
+                        {new Date(review.createdAt).toLocaleString('zh-CN')}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <Star
+                          key={star}
+                          className={cn(
+                            'w-4 h-4',
+                            review.rating >= star
+                              ? 'text-yellow-400 fill-yellow-400'
+                              : 'text-neutral-300'
+                          )}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  {review.comment && (
+                    <p className="text-sm text-neutral-600 mb-3 whitespace-pre-wrap">
+                      {review.comment}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-2 text-xs text-neutral-500">
+                    <FileText className="w-3.5 h-3.5" />
+                    <span className="truncate">关联服务: {review.post.title}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   const renderSettingsTab = () => (
     <div className="max-w-2xl mx-auto space-y-8">
       <div className="card p-6">
@@ -932,6 +1093,7 @@ export default function Profile() {
           {activeTab === 'overview' && renderOverviewTab()}
           {activeTab === 'posts' && renderPostsTab()}
           {activeTab === 'transactions' && renderTransactionsTab()}
+          {activeTab === 'reviews' && renderReviewsTab()}
           {activeTab === 'settings' && renderSettingsTab()}
         </div>
       </div>

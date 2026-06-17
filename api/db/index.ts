@@ -64,6 +64,7 @@ export async function initDatabase() {
       phone VARCHAR(20),
       avatar VARCHAR(255),
       time_balance INTEGER DEFAULT 0,
+      frozen_time_balance INTEGER DEFAULT 0,
       credit_score INTEGER DEFAULT 100,
       is_admin BOOLEAN DEFAULT 0,
       is_frozen BOOLEAN DEFAULT 0,

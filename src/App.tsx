@@ -45,6 +45,7 @@ function AppContent() {
           <Route path="/service-confirm/:postId" element={<ServiceConfirm />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/profile/transactions" element={<Profile />} />
+          <Route path="/profile/reviews" element={<Profile />} />
           <Route path="/profile/settings" element={<Profile />} />
         </Routes>
       </main>

@@ -51,6 +51,15 @@ interface ReportWithDetails extends Omit<Report, 'reporter' | 'targetUser' | 'ta
   reporter?: Partial<User>;
   targetUser?: Partial<User>;
   targetPost?: Partial<{ id: number; title: string }>;
+  targetService?: {
+    id: number;
+    postId: number;
+    postTitle: string;
+    duration: number;
+    status: string;
+    requester: { id: number; username: string; avatar?: string };
+    provider: { id: number; username: string; avatar?: string };
+  };
 }
 
 interface TransactionWithDetails extends Omit<Transaction, 'fromUser' | 'toUser'> {
@@ -343,16 +352,47 @@ function ProcessReportModal({ report, action, onClose, onConfirm }: ProcessRepor
         </div>
 
         <div className={cn(
-          'mb-6 p-4 rounded-xl',
+          'mb-6 p-4 rounded-xl space-y-3',
           config.color === 'red' && 'bg-red-50',
           config.color === 'yellow' && 'bg-yellow-50',
           config.color === 'neutral' && 'bg-neutral-50'
         )}>
-          <p className="text-sm text-neutral-600 mb-1">被举报用户</p>
-          <p className="font-medium text-neutral-800">
-            {report.targetUser?.username || `用户 #${report.targetId}`}
-          </p>
-          <p className="text-sm text-neutral-500 mt-2">{config.description}</p>
+          {report.targetType === 'service' && report.targetService ? (
+            <>
+              <div>
+                <p className="text-sm text-neutral-600 mb-1">关联服务</p>
+                <p className="font-medium text-neutral-800">
+                  {report.targetService.postTitle}
+                </p>
+                <p className="text-xs text-neutral-500">
+                  时长: {report.targetService.duration}小时 · 状态: {report.targetService.status}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-neutral-600 mb-1">涉及双方账号</p>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium text-neutral-800">{report.targetService.requester.username}</span>
+                  <span className="text-neutral-400">(请求方)</span>
+                  <span className="text-neutral-300">↔</span>
+                  <span className="font-medium text-neutral-800">{report.targetService.provider.username}</span>
+                  <span className="text-neutral-400">(提供方)</span>
+                </div>
+              </div>
+              {action === 'freeze' && (
+                <p className="text-xs text-red-600 font-medium">
+                  ⚠️ 冻结操作将同时冻结以上两个账号的时间积分
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-neutral-600 mb-1">被举报用户</p>
+              <p className="font-medium text-neutral-800">
+                {report.targetUser?.username || `用户 #${report.targetId}`}
+              </p>
+            </>
+          )}
+          <p className="text-sm text-neutral-500 pt-1">{config.description}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -988,8 +1028,18 @@ export default function Admin() {
                             </span>
                           </div>
                           <p className="text-sm text-neutral-500">
-                            被举报者: {report.targetUser?.username || `用户 #${report.targetId}`}
-                            {report.targetPost && ` · 帖子: ${report.targetPost.title}`}
+                            {report.targetType === 'service' && report.targetService ? (
+                              <>
+                                服务: {report.targetService.postTitle} ({report.targetService.duration}小时)
+                                <br />
+                                双方账号: {report.targetService.requester.username} (请求方) ↔ {report.targetService.provider.username} (提供方)
+                              </>
+                            ) : (
+                              <>
+                                被举报者: {report.targetUser?.username || `用户 #${report.targetId}`}
+                                {report.targetPost && ` · 帖子: ${report.targetPost.title}`}
+                              </>
+                            )}
                           </p>
                           <p className="text-xs text-neutral-400 mt-1">
                             {new Date(report.createdAt).toLocaleString('zh-CN')}

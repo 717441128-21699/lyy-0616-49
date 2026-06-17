@@ -1,5 +1,5 @@
 import express from 'express';
-import { dbOps, rowToUser, rowToPost } from '../db/index.js';
+import { dbOps, rowToUser, rowToPost, rowToReview } from '../db/index.js';
 
 const router = express.Router();
 
@@ -64,6 +64,51 @@ router.get('/:id/posts', async (req, res) => {
   const posts = rows.map((row: any) => rowToPost(row));
 
   res.json({ success: true, data: posts });
+});
+
+router.get('/:id/reviews', async (req, res) => {
+  const { id } = req.params;
+  const { type = 'received' } = req.query;
+
+  const userId = parseInt(id as string, 10);
+  if (isNaN(userId)) {
+    return res.status(400).json({ success: false, error: '无效的用户ID' });
+  }
+
+  const isReceived = type === 'received';
+  const whereColumn = isReceived ? 'reviewee_id' : 'reviewer_id';
+  const joinColumn = isReceived ? 'reviewer_id' : 'reviewee_id';
+
+  const rows = await dbOps.all(`
+    SELECT rv.*,
+      p.title as post_title, s.post_id,
+      u.username as other_username, u.avatar as other_avatar
+    FROM reviews rv
+    LEFT JOIN services s ON rv.service_id = s.id
+    LEFT JOIN posts p ON s.post_id = p.id
+    LEFT JOIN users u ON rv.${joinColumn} = u.id
+    WHERE rv.${whereColumn} = ?
+    ORDER BY rv.created_at DESC
+    LIMIT 50
+  `, [userId]);
+
+  const reviews = rows.map((row: any) => {
+    const review = rowToReview(row);
+    return {
+      ...review,
+      post: {
+        id: row.post_id,
+        title: row.post_title,
+      },
+      otherUser: {
+        id: row[isReceived ? 'reviewer_id' : 'reviewee_id'],
+        username: row.other_username,
+        avatar: row.other_avatar,
+      },
+    };
+  });
+
+  res.json({ success: true, data: reviews });
 });
 
 export default router;
